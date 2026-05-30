@@ -1,0 +1,114 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ===================== Параметры задачи Сода =====================
+gamma = 1.4
+L = 1.0
+x_left = -L/2
+x_right = L/2
+
+rho_L, u_L, p_L = 1.0, 0.0, 1.0
+rho_R, u_R, p_R = 0.125, 0.0, 0.1
+
+Nv = 400                 # число контрольных объёмов
+Co = 0.8                 # число Куранта
+t_max = 0.2              # конечное время
+
+# ===================== Вспомогательные функции =====================
+def prim_to_cons(rho, u, p):
+    E = p / (rho * (gamma - 1)) + 0.5 * u**2
+    return np.array([rho, rho * u, rho * E])
+
+def cons_to_prim(q):
+    rho = q[0]
+    u = q[1] / rho
+    E = q[2] / rho
+    p = (gamma - 1) * rho * (E - 0.5 * u**2)
+    return rho, u, p
+
+def flux(q):
+    rho, u, p = cons_to_prim(q)
+    E = q[2] / rho
+    H = E + p / rho
+    return np.array([rho * u, p + rho * u**2, rho * u * H])
+
+# ===================== Сетка =====================
+dx = L / Nv
+x_edges = np.linspace(x_left, x_right, Nv + 1)
+x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+
+# ===================== Инициализация =====================
+rho = np.where(x_centers < 0, rho_L, rho_R)
+u   = np.where(x_centers < 0, u_L, u_R)
+p   = np.where(x_centers < 0, p_L, p_R)
+
+q = np.array([prim_to_cons(rho[i], u[i], p[i]) for i in range(Nv)]).T
+
+# ===================== Цикл по времени =====================
+t = 0.0
+while t < t_max:
+    c = np.sqrt(gamma * p / rho)
+    lambda_max = np.max(np.abs(u) + c)
+    dt = Co * dx / lambda_max
+    if t + dt > t_max:
+        dt = t_max - t
+
+    f_edges = np.zeros((3, Nv + 1))
+
+    # Внутренние границы
+    for i in range(1, Nv):
+        qL = q[:, i-1]
+        qR = q[:, i]
+        fL = flux(qL)
+        fR = flux(qR)
+
+        rhoL, uL_loc, pL_loc = cons_to_prim(qL)
+        rhoR, uR_loc, pR_loc = cons_to_prim(qR)
+        cL = np.sqrt(gamma * pL_loc / rhoL)
+        cR = np.sqrt(gamma * pR_loc / rhoR)
+        lam = max(abs(uL_loc) + cL, abs(uR_loc) + cR)
+
+        f_edges[:, i] = 0.5 * (fL + fR) - 0.5 * lam * (qR - qL)
+
+    # Граничные потоки – свободное вытекание (чтобы не было отражений)
+    f_edges[:, 0] = flux(q[:, 0])
+    f_edges[:, -1] = flux(q[:, -1])
+
+    # Обновление консервативных переменных
+    for i in range(Nv):
+        q[:, i] -= (dt / dx) * (f_edges[:, i+1] - f_edges[:, i])
+
+    # Обновление примитивных переменных
+    for i in range(Nv):
+        rho[i], u[i], p[i] = cons_to_prim(q[:, i])
+
+    t += dt
+
+print(f"Численное решение готово. t = {t:.4f}")
+
+# ===================== Визуализация (только численное решение) =====================
+fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+
+axs[0].plot(x_centers, rho, 'b-', linewidth=1.5)
+axs[0].set_xlabel('x')
+axs[0].set_ylabel('Плотность')
+axs[0].set_title('Плотность')
+axs[0].grid(True)
+axs[0].set_ylim(0.0, 1.2)
+
+axs[1].plot(x_centers, u, 'g-', linewidth=1.5)
+axs[1].set_xlabel('x')
+axs[1].set_ylabel('Скорость')
+axs[1].set_title('Скорость')
+axs[1].grid(True)
+axs[1].set_ylim(0.0, 1.2)
+
+axs[2].plot(x_centers, p, 'r-', linewidth=1.5)
+axs[2].set_xlabel('x')
+axs[2].set_ylabel('Давление')
+axs[2].set_title('Давление')
+axs[2].grid(True)
+axs[2].set_ylim(0.0, 1.2)
+
+plt.tight_layout()
+plt.show()
