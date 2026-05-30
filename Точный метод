@@ -1,0 +1,147 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import fsolve
+
+
+# ===================== Функция точного решения задачи Римана =====================
+def exact_riemann(x, t, gamma, rhoL, uL, pL, rhoR, uR, pR):
+    """
+    Точное решение задачи Римана для идеального газа (gamma = const).
+    Вход:
+        x     : массив координат
+        t     : момент времени (>0)
+        gamma : показатель адиабаты
+        rhoL, uL, pL : начальные параметры слева (x < 0)
+        rhoR, uR, pR : начальные параметры справа (x >= 0)
+    Выход:
+        rho, u, p : массивы значений плотности, скорости, давления в точках x
+    """
+    # Скорости звука в невозмущённых состояниях
+    cL = np.sqrt(gamma * pL / rhoL)
+    cR = np.sqrt(gamma * pR / rhoR)
+
+    # ----- Вспомогательные функции для волны разрежения (слева) и ударной волны (справа) -----
+    def f_rarefaction(p):
+        """Левая волна разрежения: скорость как функция давления p в звёздной области"""
+        return uL + 2 * cL / (gamma - 1) * (1 - (p / pL) ** ((gamma - 1) / (2 * gamma)))
+
+    def f_shock(p):
+        """Правая ударная волна: скорость как функция давления p в звёздной области"""
+        # Используем стандартное соотношение на ударной волне
+        term = np.sqrt(rhoR * ((gamma + 1) * p / (2 * gamma) + (gamma - 1) * pR / (2 * gamma)))
+        return uR + (p - pR) / term
+
+    # Уравнение для давления p*: f_rarefaction(p*) - f_shock(p*) = 0
+    def equation(p):
+        if p <= 0:
+            return 1e10
+        return f_rarefaction(p) - f_shock(p)
+
+    # Начальное приближение для p* (среднее арифметическое давлений)
+    p_guess = 0.5 * (pL + pR)
+    # Решаем нелинейное уравнение
+    p_star = fsolve(equation, p_guess, factor=0.1)[0]
+    if p_star < 1e-8:
+        p_star = 1e-8  # защита от отрицательных/нулевых давлений
+
+    # Скорость в звёздной области
+    u_star = f_rarefaction(p_star)
+
+    # Плотность слева от контактного разрыва (изоэнтропа)
+    rho_star_L = rhoL * (p_star / pL) ** (1 / gamma)
+
+    # Плотность справа от контактного разрыва (соотношение на ударной волне)
+    rho_star_R = rhoR * (((gamma + 1) * p_star + (gamma - 1) * pR) /
+                         ((gamma - 1) * p_star + (gamma + 1) * pR))
+
+    # Скорость ударной волны D (для определения положения фронта)
+    D = uR + cR * np.sqrt((gamma + 1) / (2 * gamma) * (p_star / pR - 1) + 1)
+
+    # Границы характерных областей в момент t
+    # Волна разрежения: голова и хвост
+    x_head_rare = (uL - cL) * t
+    x_tail_rare = (u_star - cL * (p_star / pL) ** ((gamma - 1) / (2 * gamma))) * t
+
+    # Контактный разрыв
+    x_contact = u_star * t
+
+    # Ударная волна
+    x_shock = D * t
+
+    # Инициализация выходных массивов
+    rho = np.zeros_like(x)
+    u = np.zeros_like(x)
+    p = np.zeros_like(x)
+
+    # Заполнение значений по зонам
+    for i, xi in enumerate(x):
+        if xi <= x_head_rare:
+            # Зона 1: невозмущённый газ слева
+            rho[i] = rhoL
+            u[i] = uL
+            p[i] = pL
+        elif xi <= x_tail_rare:
+            # Зона 2: внутри волны разрежения (автомодельное решение)
+            xi_t = xi / t
+            u[i] = (2 / (gamma + 1)) * (cL + (gamma - 1) / 2 * uL + xi_t)
+            c = cL - (gamma - 1) / 2 * (u[i] - uL)
+            rho[i] = rhoL * (c / cL) ** (2 / (gamma - 1))
+            p[i] = pL * (rho[i] / rhoL) ** gamma
+        elif xi <= x_contact:
+            # Зона 3: левая звёздная область
+            rho[i] = rho_star_L
+            u[i] = u_star
+            p[i] = p_star
+        elif xi <= x_shock:
+            # Зона 4: правая звёздная область
+            rho[i] = rho_star_R
+            u[i] = u_star
+            p[i] = p_star
+        else:
+            # Зона 5: невозмущённый газ справа
+            rho[i] = rhoR
+            u[i] = uR
+            p[i] = pR
+
+    return rho, u, p
+
+
+# ===================== Пример использования =====================
+if __name__ == "__main__":
+    # Параметры задачи (классическая задача Сода)
+    gamma = 1.4
+    rhoL, uL, pL = 1.0, 0.0, 1.0
+    rhoR, uR, pR = 0.125, 0.0, 0.1
+    t = 0.2  # момент времени
+    L = 1.0  # длина трубы
+    x_left, x_right = -L / 2, L / 2
+
+    # Точки для расчёта
+    x_vals = np.linspace(x_left, x_right, 500)
+
+    # Получение точного решения
+    rho_ex, u_ex, p_ex = exact_riemann(x_vals, t, gamma, rhoL, uL, pL, rhoR, uR, pR)
+
+    # Визуализация
+    fig, axs = plt.subplots(1, 3, figsize=(15, 4))
+
+    axs[0].plot(x_vals, rho_ex, 'r-', linewidth=2)
+    axs[0].set_xlabel('x')
+    axs[0].set_ylabel('Плотность')
+    axs[0].set_title('Плотность (точное решение)')
+    axs[0].grid(True)
+
+    axs[1].plot(x_vals, u_ex, 'g-', linewidth=2)
+    axs[1].set_xlabel('x')
+    axs[1].set_ylabel('Скорость')
+    axs[1].set_title('Скорость (точное решение)')
+    axs[1].grid(True)
+
+    axs[2].plot(x_vals, p_ex, 'b-', linewidth=2)
+    axs[2].set_xlabel('x')
+    axs[2].set_ylabel('Давление')
+    axs[2].set_title('Давление (точное решение)')
+    axs[2].grid(True)
+
+    plt.tight_layout()
+    plt.show()
