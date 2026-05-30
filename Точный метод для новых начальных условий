@@ -1,0 +1,171 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import fsolve
+
+# ===================== Параметры задачи (обратный Сод) =====================
+gamma = 1.4
+L = 1.0
+x_left = -L/2
+x_right = L/2
+
+# Начальные условия: слева низкое давление, справа высокое
+rho_L, u_L, p_L = 0.125, 0.0, 0.1   # разреженный газ
+rho_R, u_R, p_R = 1.0,   0.0, 1.0   # плотный газ
+
+t = 0.2                     # момент времени
+
+# ===================== Универсальное точное решение задачи Римана =====================
+def exact_riemann(x, t, gamma, rhoL, uL, pL, rhoR, uR, pR):
+    cL = np.sqrt(gamma * pL / rhoL)
+    cR = np.sqrt(gamma * pR / rhoR)
+
+    # Функции для левой стороны
+    def fL_rare(p):
+        return uL + 2*cL/(gamma-1) * (1 - (p/pL)**((gamma-1)/(2*gamma)))
+
+    def fL_shock(p):
+        term = np.sqrt(rhoL * (0.5*(gamma+1)*p + 0.5*(gamma-1)*pL))
+        return uL - (p - pL) / term
+
+    # Функции для правой стороны
+    def fR_rare(p):
+        return uR - 2*cR/(gamma-1) * (1 - (p/pR)**((gamma-1)/(2*gamma)))
+
+    def fR_shock(p):
+        term = np.sqrt(rhoR * (0.5*(gamma+1)*p + 0.5*(gamma-1)*pR))
+        return uR + (p - pR) / term
+
+    # Поиск правильной комбинации волн (перебор 4 вариантов)
+    best_p = None
+    use_rare_L = True
+    use_rare_R = False
+    min_res = np.inf
+
+    for rareL in [True, False]:
+        for rareR in [True, False]:
+            fL = fL_rare if rareL else fL_shock
+            fR = fR_rare if rareR else fR_shock
+            def eq(p):
+                if p <= 0:
+                    return 1e10
+                return fL(p) - fR(p)
+            try:
+                p_guess = max(1e-8, 0.5*(pL + pR))
+                p_star = fsolve(eq, p_guess, factor=0.1, maxfev=1000)[0]
+                if p_star > 0:
+                    res = abs(eq(p_star))
+                    if res < min_res:
+                        min_res = res
+                        best_p = p_star
+                        use_rare_L = rareL
+                        use_rare_R = rareR
+            except:
+                continue
+
+    if best_p is None:
+        raise ValueError("Не удалось найти p*")
+    p_star = best_p
+
+    fL = fL_rare if use_rare_L else fL_shock
+    u_star = fL(p_star)
+
+    # Плотности за волнами
+    if use_rare_L:
+        rho_star_L = rhoL * (p_star / pL)**(1/gamma)
+    else:
+        rho_star_L = rhoL * (((gamma+1)*p_star + (gamma-1)*pL) /
+                              ((gamma-1)*p_star + (gamma+1)*pL))
+    if use_rare_R:
+        rho_star_R = rhoR * (p_star / pR)**(1/gamma)
+    else:
+        rho_star_R = rhoR * (((gamma+1)*p_star + (gamma-1)*pR) /
+                              ((gamma-1)*p_star + (gamma+1)*pR))
+
+    # Скорости волн и их положения в момент t
+    if use_rare_L:
+        x_head_L = (uL - cL) * t
+        x_tail_L = (u_star - cL * (p_star/pL)**((gamma-1)/(2*gamma))) * t
+    else:
+        D_L = uL - cL * np.sqrt((gamma+1)/(2*gamma) * (p_star/pL) + (gamma-1)/(2*gamma))
+        x_head_L = D_L * t
+        x_tail_L = x_head_L
+
+    if use_rare_R:
+        x_head_R = (uR + cR) * t
+        x_tail_R = (u_star + cR * (p_star/pR)**((gamma-1)/(2*gamma))) * t
+    else:
+        D_R = uR + cR * np.sqrt((gamma+1)/(2*gamma) * (p_star/pR) + (gamma-1)/(2*gamma))
+        x_head_R = D_R * t
+        x_tail_R = x_head_R
+
+    x_contact = u_star * t
+
+    # Заполнение массивов
+    rho_arr = np.zeros_like(x)
+    u_arr = np.zeros_like(x)
+    p_arr = np.zeros_like(x)
+
+    for i, xi in enumerate(x):
+        if xi <= x_head_L:
+            # Зона 1: невозмущённый газ слева
+            rho_arr[i], u_arr[i], p_arr[i] = rhoL, uL, pL
+        elif use_rare_L and xi <= x_tail_L:
+            # Зона 2: внутри левой волны разрежения
+            xi_t = xi / t
+            u_arr[i] = (2/(gamma+1)) * (cL + (gamma-1)/2*uL + xi_t)
+            c = cL - (gamma-1)/2 * (u_arr[i] - uL)
+            rho_arr[i] = rhoL * (c/cL)**(2/(gamma-1))
+            p_arr[i] = pL * (rho_arr[i]/rhoL)**gamma
+        elif xi <= x_contact:
+            # Зона 3: левая звёздная область
+            rho_arr[i], u_arr[i], p_arr[i] = rho_star_L, u_star, p_star
+        elif use_rare_R and xi >= x_tail_R and xi <= x_head_R:
+            # Зона 4: внутри правой волны разрежения
+            xi_t = xi / t
+            u_arr[i] = (2/(gamma+1)) * (-cR + (gamma-1)/2*uR + xi_t)
+            c = cR + (gamma-1)/2 * (u_arr[i] - uR)
+            rho_arr[i] = rhoR * (c/cR)**(2/(gamma-1))
+            p_arr[i] = pR * (rho_arr[i]/rhoR)**gamma
+        elif xi <= x_head_R:
+            # Зона 4: правая звёздная область (между контактом и ударной волной)
+            rho_arr[i], u_arr[i], p_arr[i] = rho_star_R, u_star, p_star
+        else:
+            # Зона 5: невозмущённый газ справа
+            rho_arr[i], u_arr[i], p_arr[i] = rhoR, uR, pR
+    return rho_arr, u_arr, p_arr, p_star, u_star
+
+# ===================== Расчёт точного решения =====================
+x_vals = np.linspace(x_left, x_right, 2000)
+rho_ex, u_ex, p_ex, p_star, u_star = exact_riemann(x_vals, t, gamma, rho_L, u_L, p_L, rho_R, u_R, p_R)
+
+print(f"Параметры в звёздной области:")
+print(f"  p* = {p_star:.6f}")
+print(f"  u* = {u_star:.6f}")
+print(f"  (для классического Сода: p*≈0.30313, u*≈0.92745)")
+
+# ===================== Визуализация =====================
+fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+
+axs[0].plot(x_vals, rho_ex, 'r-', linewidth=2)
+axs[0].set_xlabel('x')
+axs[0].set_ylabel('Плотность')
+axs[0].set_title('Плотность (точное решение, обратный Сод)')
+axs[0].grid(True)
+axs[0].set_ylim(0.0, 2.0)
+
+axs[1].plot(x_vals, u_ex, 'g-', linewidth=2)
+axs[1].set_xlabel('x')
+axs[1].set_ylabel('Скорость')
+axs[1].set_title('Скорость (точное решение, обратный Сод)')
+axs[1].grid(True)
+axs[1].set_ylim(-1.5, 1.0)      
+
+axs[2].plot(x_vals, p_ex, 'b-', linewidth=2)
+axs[2].set_xlabel('x')
+axs[2].set_ylabel('Давление')
+axs[2].set_title('Давление (точное решение, обратный Сод)')
+axs[2].grid(True)
+axs[2].set_ylim(0.0, 2.0)
+
+plt.tight_layout()
+plt.show()
