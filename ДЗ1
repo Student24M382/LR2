@@ -1,0 +1,219 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+import json
+
+# Исходные данные
+p_0 = 2.13e6         # Полное давление газа (давление в камере двигателя), Па
+T_0 = 3445          # Полная температура газа (температура в камере двигаетеля), К
+R = 377          # Индивидуальная газовая постоянная, Дж/(кг*К)
+k = 1.3            # Показатель адиабаты газа
+d_c = 0.995            # Диаметр критического сечения сопла, м
+ν_B = 9.3           # Коэффициент уширения сопла
+D_k = 3.2*d_c       # Диаметр камеры ракетного двигателя, см
+μ_t = 0.67           # Относительная масса топлива
+α = np.radians(42.3)  # Угол сужения конфузора, рад
+β = np.radians(10)   # Угол расширения диффузора, рад
+p_H = 100000 # Давление окружающей среды, Па
+
+# Метапараметры вычислительного алгоритма
+N_1 = 100 # Число разбиений в конфузорной части
+N_2 = 100 # Число разбиений в диффузорной части
+ε = 1e-6  # Погрешность метода половинного деления
+
+# Вспомогательные вычисления
+ρ_0 = p_0/(R*T_0)        # Полная плотность газа (плотность в камере двигателя), кг/м^3
+S_c = 0.25*np.pi*d_c**2  # Площадь критического сечения сопла, м^3
+
+# Определение геометрических характеристик сопла
+d_B = d_c*np.sqrt(ν_B)                  # Диаметр выходного сечения сопла, см
+x_c = 0.5*(D_k - d_c)/np.tan(α)         # Координата критического сечения сопла, м
+x_B = x_c + 0.5*(d_B - d_c)/np.tan(β)   # Координата выходного сечения сопла, м
+
+
+def d(x, x_c, x_B, D_k, d_c, d_B):
+    '''Функция вычисления диаметра в текущем сечении'''
+    if x <= x_c:
+        d = D_k - (D_k - d_c)*x/x_c
+    else:
+        d = d_c + (d_B - d_c)*(x - x_c)/(x_B - x_c)
+    return d
+
+# Введение разбиения в конфузорной и диффузорной части сопла
+x_1 = np.linspace(0, x_c, N_1, endpoint=False) # До критического сечения
+x_2 = np.linspace(x_c, x_B, N_2)               # После критического сечения
+x = np.concatenate([x_1, x_2])                 # Объединение участков
+
+# Формирование пустых массивов
+S = np.zeros_like(x)    # Площадь сечения, м^2
+λ = np.zeros_like(x)    # Скоростной коэффициент
+M = np.zeros_like(x)    # Число Маха
+T = np.zeros_like(x)    # Статическая температура газового потока, К
+p = np.zeros_like(x)    # Статическое давление газа, Па
+ρ = np.zeros_like(x)    # Статическая плотность газового потока, кг/м^3
+j = np.zeros_like(x)    # Массовый расход, приходящийся на единицу площади
+                        # поперечного сечения сопла, кг/(с*м^2)
+G = np.zeros_like(x)    # Массовый расход, кг/с
+
+# Газодинамические функции
+tau = lambda λ, k: 1 - (k - 1)/(k + 1)*λ**2
+eps = lambda λ, k: tau(λ, k)**(1/(k - 1))
+pi = lambda λ, k: tau(λ, k)**(k/(k - 1))
+
+def f(λ, S_so_S_c, k):
+    '''Функция f(x) = 0'''
+    numerator = 2/(k + 1)
+    denominator = 1 - ((k - 1)/(k + 1))*λ**2
+    f = S_so_S_c - (1/λ)*(numerator/denominator)**(1/(k - 1))
+    return f
+
+
+def bisection_method(S, k, a, b, tol):
+    ''' Метод деления отрезка пополам'''
+    while (b - a)/2.0 > tol:
+        midpoint = (a + b)/2.0
+        if f(midpoint, S, k) == 0:
+            return(midpoint)
+        elif f(a, S, k)*f(midpoint, S, k) < 0:
+            b = midpoint
+        else:
+            a = midpoint
+    return(midpoint)
+
+def find_root(x_to_x_c, S_to_S_c, k):
+    '''Функция для вычисления корня'''
+    if x_to_x_c <= 1:
+        root = bisection_method(S_to_S_c, k, 0.001, 1.0 - 1e-6, ε)
+    else:
+        root = bisection_method(S_to_S_c, k, 1.0 + 1e-6, 3, ε)
+    return root
+
+# Вычисление газодинамических характеристик потока
+for i in range(len(x)):
+    S[i] = 0.25*np.pi*d(x[i], x_c, x_B, D_k, d_c, d_B)**2
+    λ[i] = find_root(x[i]/x_c, S[i]/S_c, k)
+
+M[:] = np.sqrt(2/(k + 1)*λ[:]**2/(1 - (k - 1)/(k + 1)*λ[:]**2))
+T[:] = T_0*tau(λ[:], k)
+ρ[:] = ρ_0*eps(λ[:], k)
+p[:] = p_0*pi(λ[:], k)
+j[:] = ρ[:]*λ[:]*np.sqrt(2*k*R*T_0/(k + 1))
+G[:] = j[:]*S[:]
+
+
+# Построение графиков с использованием Matplotlib
+mpl.rcParams['font.family'] = 'serif'
+mpl.rcParams['font.weight'] = 'ultralight'
+mpl.rcParams['font.serif'] = 'Times New Roman'
+mpl.rcParams['font.size'] = 12
+mpl.rcParams['font.style'] = 'normal'
+mpl.rcParams['mathtext.default'] = 'regular'
+
+def single_plot(x, x_c, y, label, filename = 'graph.svg'):
+    plt.plot(x, y)
+    if label == '$S/S_*$':
+        plt.xlabel('$M$')
+    else:
+        plt.xlabel('$x$, м')
+    plt.ylabel(label)
+    plt.axvline(x=x_c, ls = '--', color = 'gray')
+    plt.grid(True)
+    plt.savefig(filename)
+    plt.show()
+
+
+single_plot(x, x_c, S, '$S$, м$^2$', filename = 'graph_S.svg')
+single_plot(x, x_c, λ, r'$\lambda$', filename = 'graph_lambda.svg')
+single_plot(x, x_c, M, '$M$', filename = 'graph_M.svg')
+single_plot(x, x_c, T, '$T$, K', filename = 'graph_T.svg')
+single_plot(x, x_c, p*1e-6,'$p$, Па', filename = 'graph_p.svg')
+single_plot(x, x_c, ρ, '$\\rho$, кг/м$^3$', filename = 'graph_ro.svg')
+single_plot(x, x_c, j, r'$j$, кг/с $\cdot$ м $^2$', filename = 'graph_j.svg')
+
+single_plot(x, x_c, G, '$G$, кг/с', filename = 'graph_G.svg')
+
+single_plot(M, 1, S/S_c, '$S/S_*$', filename = 'graph_S_Sc.svg')
+
+# Параметры выходного сечения
+S_B = S[-1]         # Площадь выходного сечения
+p_B = p[-1]         # Давление на выходе
+G_value = G[-1]     # Массовый расход
+v_B = j[-1] / ρ[-1] # Скорость газа на выходе
+
+
+P = G_value * v_B + S_B * (p_B - p_H)   # Расчёт тяги сопла
+P_ud = P/G_value                        # Удельная тяга сопла
+P_vak = G_value * v_B + S_B * p_B       # Тяга в вакууме
+P_ud_vak = P_vak/G_value                    # Удельная тяга сопла в вакууме
+v = -P_ud_vak*np.log(1 - μ_t)           # Скорость идеальной ракеты
+
+print(f'Сила тяги: {P: .2f} Н')
+print(f'Удельная тяга: {P_ud: .2f} м/с')
+print(f'Сила тяги в вакууме: {P_vak: .2f} Н')
+print(f'Удельная тяга в вакууме: {P_ud_vak: .2f} Н')
+print(f'Идеальная скорость ракеты: {v: .2f} Н')
+print(f'Степень нерасчётности сопла: {p_H/p_B: .2f}')
+if p_H/p_B < 1:
+    print('Сопло работает с недорасширением')
+elif p_H/p_B > 1:
+    print('Сопло работает с перерасширением')
+
+M_B_r = np.sqrt((2/(k - 1))*((p_0/p_H)**((k - 1)/k) - 1))   # Число Маха на выходе
+                                                            # в расчётном режиме
+S_B_r = ((S_c/M_B_r)*(2/(k + 1))**((k + 1)/(2*(k - 1)))*    # Площадь выходного сечения
+        (1 + (k - 1)*(M_B_r**2)/2)**((k + 1)/(2*(k - 1))))  # для расчётного режима, м^2
+d_B_r = np.sqrt(4*S_B_r/np.pi)                              # Диаметр выходного сечения, м
+x_B_r = x_c + (d_B_r - d_c) / (2*np.tan(β))                 # Координата выходного сечения
+
+print(f'Число Маха на выходе для расчётного режима: {M_B_r: .2f}')
+print(f'Площадь выходного сечения для расчётного режима: {S_B_r: .2f}, м^2')
+print(f'Диаметр выходного сечения для расчётного режима: {d_B_r: .2f}, м')
+print(f'Координата выходного сечения для расчётного режима: {x_B_r: .2f}, м')
+print(f'Для обеспечения расчётного режима работы сопла его нужно удлинить на {x_B_r - x_B: .2f} м \nВ относительных величинах эта длина составит {(x_B_r - x_B)*100/x_B: .1f}%')
+print(f'Массовый расход: {G_value: .2f}, кг/с')
+print(f'Площадь выходного сечения: {S_B: .2f}, м^2')
+print(f'Давление на выходе: {p_B: .2f}, Па')
+print(f'Скорость газа на выходе: {v_B: .2f}, м/с')
+
+data = {
+    "Информация": {
+        "Вариант": 4
+    },
+    "Сопло": {
+        "Диаметр камеры сгорания, м": float(D_k),
+        "Диаметр критического сечения, м": float(d_c),
+        "Коэффициент уширения сопла": float(ν_B),
+        "Угол конфузора, градус": float(np.degrees(α)),
+        "Угол диффузора, градус": float(np.degrees(β)),
+        "Диаметр выходного сечения, м": float(d_B),
+        "Координата критического сечения, м": float(x_c),
+        "Координата выходного сечения, м": float(x_B),
+        "Площадь критического сечения, м^2": float(S_c)
+    },
+    "Физика": {
+        "Массовый расход, кг/с": float(G_value),
+        "Скорость потока на выходе, м/с": float(v_B),
+        "Давление на выходе, Па": float(p_B),
+        "Тяга, Н": float(P),
+        "Удельная тяга, м/с": float(P_ud),
+        "Тяга в пустоте, Н": float(P_vak),
+        "Удельная тяга в пустоте, м/с": float(P_ud_vak),
+        "Скорость идеальной ракеты, м/с": float(v),
+        "Степень нерасчётности сопла": float((p_H)/p_B)
+    },
+    "Расчётное сопло": {
+        "Число Маха на выходе": float(M_B_r),
+        "Диаметр выходного сечения, м": float(d_B_r),
+        "Координата выходного сечения, м": float(x_B_r),
+        "Удлинение (+) или укорочение (-) сопла, м": float(x_B_r - x_B),
+        "Относительное удлинение (+) или укорочение (-) сопла, %": float((x_B_r - x_B)*100/x_B)
+    }
+}
+
+# Сохранение в файл
+def save_to_json(data, filename="hw_nozzle.json"):
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"Данные сохранены в {filename}")
+
+save_to_json(data)
